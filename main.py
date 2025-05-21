@@ -5,6 +5,7 @@ import os
 from pyrogram import Client, filters
 import logging
 from aiohttp import ClientTimeout
+import time
 
 # Set up logging to catch any bullshit errors
 logging.basicConfig(level=logging.INFO)
@@ -21,9 +22,15 @@ BASE_API_URL = "https://taitan-medi-downloader.taitanapi.workers.dev/down?url="
 # Initialize the bot client
 app = Client("media_downloader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
+# Rate limiting to avoid Telegram bullshit
+last_message_time = 0
+RATE_LIMIT_SECONDS = 1  # 1 second between messages
+
 # Async function to fetch media from the API with retries and headers
-async def fetch_media(url, retries=1, timeout=8):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+async def fetch_media(url, retries=2, timeout=10):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
     for attempt in range(retries):
         try:
             async with aiohttp.ClientSession(timeout=ClientTimeout(total=timeout), headers=headers) as session:
@@ -36,21 +43,33 @@ async def fetch_media(url, retries=1, timeout=8):
         except Exception as e:
             if attempt == retries - 1:
                 return None, f"Shit hit the fan: {str(e)}"
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(1)
     return None, "Fuck, retries failed."
 
-# Function to select the best video quality (not audio)
+# Function to select the best video quality (mp4, not audio)
 def select_best_video(medias):
     for media in medias:
-        if "audio" not in media["quality"].lower():
+        quality = media["quality"].lower()
+        if "audio" not in quality and "mp4" in quality:
+            return media["url"]
+        elif "audio" not in quality and ("hd" in quality or "no_watermark" in quality):
             return media["url"]
     return None
 
 # Handler for any text message (assumes it’s a URL)
 @app.on_message(filters.text & ~filters.command(["start"]))
 async def handle_url(client, message):
+    global last_message_time
+
+    # Rate limiting to avoid Telegram spam
+    current_time = time.time()
+    if current_time - last_message_time < RATE_LIMIT_SECONDS:
+        await asyncio.sleep(RATE_LIMIT_SECONDS - (current_time - last_message_time))
+    last_message_time = time.time()
+
     url = message.text.strip()
-    if not url.startswith("http"):
+    # Better URL validation
+    if not (url.startswith("http://") or url.startswith("https://")) or len(url) < 10:
         await message.reply_text("That’s not a fucking URL, dumbass. Send a proper link!")
         return
 
@@ -80,13 +99,16 @@ async def handle_url(client, message):
     # Download and send the video
     temp_file = f"temp_video_{message.chat.id}.mp4"
     try:
-        async with aiohttp.ClientSession(timeout=ClientTimeout(total=20), headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}) as session:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        async with aiohttp.ClientSession(timeout=ClientTimeout(total=30), headers=headers) as session:
             async with session.get(video_url) as response:
                 if response.status != 200:
                     await processing_message.edit_text(f"Download fucked up with status {response.status}")
                     return
                 with open(temp_file, "wb") as f:
-                    async for chunk in response.content.iter_chunked(2048 * 1024):  # 2MB chunks
+                    async for chunk in response.content.iter_chunked(1024 * 1024):  # 1MB chunks
                         f.write(chunk)
                 await message.reply_video(video=temp_file, caption=f"Here’s your fucking video: {title}")
                 os.remove(temp_file)
@@ -100,6 +122,12 @@ async def handle_url(client, message):
 # Command handler for /start
 @app.on_message(filters.command("start"))
 async def start_command(client, message):
+    global last_message_time
+    current_time = time.time()
+    if current_time - last_message_time < RATE_LIMIT_SECONDS:
+        await asyncio.sleep(RATE_LIMIT_SECONDS - (current_time - last_message_time))
+    last_message_time = time.time()
+
     await message.reply_text("Yo, I’m your fucking media downloader bot! Send me a goddamn social media link, and I’ll grab the video for you. Let’s fucking do this!")
 
 # Start the bot
