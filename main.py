@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 # Bot credentials
 API_ID = 15787995
 API_HASH = "e51a3154d2e0c45e5ed70251d68382de"
-BOT_TOKEN = "7929166887:AAFO20E0MW1hz0J0jiyCPxNu1YYfmPCvBuQ"
+BOT_TOKEN = "7778008222:AAHvSQD-cYX6VIEqNQk-tpuBkU9VACpGP1s"
 
 # The API URL for downloading media
 BASE_API_URL = "https://taitan-medi-downloader.taitanapi.workers.dev/down?url="
