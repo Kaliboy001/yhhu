@@ -1,148 +1,104 @@
 import asyncio
+import re
 import aiohttp
-import json
+from telethon import TelegramClient, events
+from telethon.tl.types import DocumentAttributeVideo
+import uuid
 import os
-from pyrogram import Client, filters
-import logging
-from aiohttp import ClientTimeout
-import time
 
-# Set up logging to catch errors cleanly
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Bot configuration - Replace with your actual credentials
+API_ID = '15787995'  # Get from my.telegram.org
+API_HASH = 'e51a3154d2e0c45e5ed70251d68382de'  # Get from my.telegram.org
+BOT_TOKEN = '6947943234:AAGeX30scbhBm5LTOo0fjYD8RFv8Yyzdk6M'  # Get from @BotFather
+API_URL = 'https://taitan-medi-downloader.taitanapi.workers.dev/down?url='
 
-# Bot credentials
-API_ID = 15787995
-API_HASH = "e51a3154d2e0c45e5ed70251d68382de"
-BOT_TOKEN = "7778008222:AAHvSQD-cYX6VIEqNQk-tpuBkU9VACpGP1s"
+# Initialize Telegram client with optimizations
+client = TelegramClient('bot', API_ID, API_HASH, connection_retries=3, timeout=10)
 
-# The API URL for downloading media
-BASE_API_URL = "https://taitan-medi-downloader.taitanapi.workers.dev/down?url="
+# Broad URL validation pattern for multiple platforms
+PLATFORM_REGEX = r'(https?://)?(www\.)?(youtube\.com|youtu\.be|instagram\.com|facebook\.com|tiktok\.com)/.+$'
 
-# Initialize the bot client
-app = Client("media_downloader_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
-# Rate limiting to avoid Telegram spam
-last_message_time = 0
-RATE_LIMIT_SECONDS = 2  # 2 seconds between messages
-
-# Async function to fetch media from the API with retries and headers
-async def fetch_media(url, retries=2, timeout=10):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "Accept": "*/*",
-        "Referer": "https://www.youtube.com/"
-    }
-    for attempt in range(retries):
-        try:
-            async with aiohttp.ClientSession(timeout=ClientTimeout(total=timeout), headers=headers) as session:
-                api_url = f"{BASE_API_URL}{url}"
-                async with session.get(api_url) as response:
-                    if response.status != 200:
-                        return None, f"API error: status {response.status}"
-                    data = await response.json()
-                    return data, None
-        except Exception as e:
-            if attempt == retries - 1:
-                return None, f"API fetch failed: {str(e)}"
-            await asyncio.sleep(1)
-    return None, "API retries exhausted."
-
-# Function to select the best video quality (mp4, not audio)
-def select_best_video(medias, url):
-    is_youtube = "youtube.com" in url or "youtu.be" in url
-    is_tiktok = "tiktok.com" in url
-    is_facebook = "facebook.com" in url
-
-    for media in medias:
-        quality = media["quality"].lower()
-        if "audio" in quality:
-            continue
-        if is_youtube and "mp4" in quality:
-            return media["url"]
-        elif is_tiktok and "no_watermark" in quality:
-            return media["url"]
-        elif is_facebook and "hd" in quality:
-            return media["url"]
-        elif "audio" not in quality:
-            return media["url"]
-    return None
-
-# Command handler for /start
-@app.on_message(filters.command("start"))
-async def start_command(client, message):
-    global last_message_time
-    current_time = time.time()
-    if current_time - last_message_time < RATE_LIMIT_SECONDS:
-        await asyncio.sleep(RATE_LIMIT_SECONDS - (current_time - last_message_time))
-    last_message_time = time.time()
-
-    await message.reply_text("Send a social media link, I’ll download the video. Let’s fucking go!")
-
-# Handler for any text message (assumes it’s a URL)
-@app.on_message(filters.text & ~filters.command(["start"]))
-async def handle_url(client, message):
-    global last_message_time
-
-    # Rate limiting to prevent spam
-    current_time = time.time()
-    if current_time - last_message_time < RATE_LIMIT_SECONDS:
-        await asyncio.sleep(RATE_LIMIT_SECONDS - (current_time - last_message_time))
-    last_message_time = time.time()
-
-    url = message.text.strip()
-    if not (url.startswith("http://") or url.startswith("https://")) or len(url) < 10:
-        await message.reply_text("Send a proper fucking URL, asshole!")
-        return
-
-    # Send a "processing" message
-    processing_message = await message.reply_text("Processing your video, wait a sec...")
-
-    # Fetch the media from the API
-    data, error = await fetch_media(url)
-    if error or not data:
-        await processing_message.edit_text(f"Error: {error or 'No data found.'}")
-        return
-
-    # Extract media list
-    medias = data.get("medias", [])
-    if not medias:
-        await processing_message.edit_text("No media found in the link.")
-        return
-
-    # Select the best video
-    video_url = select_best_video(medias, url)
-    if not video_url:
-        await processing_message.edit_text("No video found, only audio.")
-        return
-
-    # Download and send the video
-    temp_file = f"temp_video_{message.chat.id}.mp4"
+async def fetch_video_info(url):
+    """Fetch media information from the API with timeout."""
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Accept": "*/*",
-            "Referer": "https://www.youtube.com/" if "youtube.com" in url or "youtu.be" in url else url
-        }
-        async with aiohttp.ClientSession(timeout=ClientTimeout(total=40), headers=headers) as session:
-            async with session.get(video_url) as response:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(API_URL + url, timeout=10) as response:
+                if response.status == 200:
+                    return await response.json()
+                return None
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        return None
+
+async def stream_download(video_url, file_name):
+    """Stream download the media to a file with smaller chunks."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(video_url, timeout=30) as response:
                 if response.status != 200:
-                    await processing_message.edit_text(f"Download failed: status {response.status}")
-                    return
-                with open(temp_file, "wb") as f:
+                    return False
+                with open(file_name, 'wb') as f:
                     async for chunk in response.content.iter_chunked(1024 * 1024):  # 1MB chunks
                         f.write(chunk)
-                # Send the video, no caption
-                await message.reply_video(video=temp_file)
-                os.remove(temp_file)
-    except Exception as e:
-        await processing_message.edit_text(f"Download/upload error: {str(e)}")
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
+                return True
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        return False
 
-    await processing_message.delete()
+@client.on(events.NewMessage(pattern=PLATFORM_REGEX))
+async def handle_media_link(event):
+    """Handle media URL messages from various platforms and send video directly."""
+    media_url = event.message.text
+    chat_id = event.chat_id
+    
+    # Send processing message
+    processing_msg = await event.reply("Processing... ⏳")
+    
+    # Fetch media information
+    media_info = await fetch_video_info(media_url)
+    
+    if not media_info or 'medias' not in media_info:
+        await client.send_message(chat_id, "Couldn't process this link. Try another.")
+        await processing_msg.delete()
+        return
+    
+    # Select the first available video quality
+    video_medias = [m for m in media_info['medias'] if m['quality'].lower() not in ('audio', 'sd')]
+    if not video_medias:
+        video_medias = [m for m in media_info['medias'] if not m['quality'].lower() == 'audio']
+    if not video_medias:
+        await client.send_message(chat_id, "No video available for this link.")
+        await processing_msg.delete()
+        return
+    
+    selected_media = video_medias[0]
+    title = media_info['title'].replace('/', '_')  # Sanitize title for filename
+    duration = int(sum(int(x) * 60 ** i for i, x in enumerate(reversed(media_info['duration'].split(':'))))) if ':' in media_info['duration'] else int(media_info['duration'])
+    
+    # Stream download the video
+    file_name = f"{title[:50]}_{uuid.uuid4().hex}.mp4"  # Limit title length to avoid filename issues
+    success = await stream_download(selected_media['url'], file_name)
+    
+    if not success or not os.path.exists(file_name):
+        await client.send_message(chat_id, "Failed to download. Try again.")
+        await processing_msg.delete()
+        if os.path.exists(file_name):
+            os.remove(file_name)
+        return
+    
+    # Send video to user with title in filename
+    await client.send_file(
+        chat_id,
+        file_name,
+        attributes=[DocumentAttributeVideo(duration=duration, w=640, h=360)]
+    )
+    
+    # Clean up
+    os.remove(file_name)
+    await processing_msg.delete()
 
-# Start the bot
-if __name__ == "__main__":
-    logger.info("Starting the bot...")
-    app.run()
+async def main():
+    """Start the bot with reconnection handling."""
+    await client.start(bot_token=BOT_TOKEN)
+    await client.run_until_disconnected()
+
+if __name__ == '__main__':
+    asyncio.run(main())
