@@ -1,6 +1,5 @@
-telethon
+python-telegram-bot
 requests
-pyrogram
 tgcrypto
 aiohttp
 flask
